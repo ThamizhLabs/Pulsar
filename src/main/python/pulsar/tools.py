@@ -4,9 +4,10 @@ from datetime import datetime
 from multiprocessing import Pool, Manager
 
 from pulsar.Solver import Solver
+from pulsar.SATSolver import SATSolver
 
 
-backtracking_depth_max = 40
+backtracking_depth_max = 300
 backtracking_step = 1
 parallel_processes_max = 10
 
@@ -55,8 +56,6 @@ def get_actions_from_question(puzzle):
 
 def simple_solve(puzzle):
 
-    print("Simple solve triggered..")
-
     grid, actions = get_actions_from_question(puzzle)
 
     solver = Solver(grid, actions)
@@ -65,15 +64,13 @@ def simple_solve(puzzle):
     if solver.state_invalid:
         print("Puzzle Invalid!")
 
-    if solver.state_solved:
-        print("Puzzle Solved!")
-
     return solver
 
 
 def apply_backtracking(grid, depth=1):
 
     actions_list = get_next_set_of_actions(grid, step=backtracking_step)
+    solver = None
     for actions in actions_list:
         solver = Solver(deepcopy(grid), actions)
         solver.solve()
@@ -118,7 +115,7 @@ def sequential_solver(puzzle, response_queue, session_id):
 
     try:
         response_queue.put(payload)
-        print("Solution put into the response queue!")
+        print("Response queue loaded!")
     except ValueError:
         print(f"Error occurred while loading response queue")
 
@@ -140,10 +137,8 @@ def parallel_solver_pooling(puzzle, response_queue, session_id):
         return
 
     if not solver.state_invalid:
-        print("Simple Solve not enough, applying multithreaded backtracking..")
+        print("Applying multithreaded backtracking..")
         actions_list = get_next_set_of_actions(solver.grid, step=1)
-
-        print(f"Total Iterations: {len(actions_list)}")
 
         with Manager() as manager:
             solution_found = manager.Event()
@@ -158,7 +153,6 @@ def parallel_solver_pooling(puzzle, response_queue, session_id):
             tracker['solution'] = None
 
             tracker['spawn_queue'] = manager.Queue()
-            tracker['promising_states'] = manager.Queue()
 
             # with Pool(processes=parallel_processes_max) as pool:  # Adjust the number of processes as needed
             #     tasks = pool.starmap(create_tasks_for_pooling,
@@ -191,13 +185,6 @@ def parallel_solver_pooling(puzzle, response_queue, session_id):
                         async_results.append(pool.apply_async(worker_process_pooling,
                                                               args=(*x, solution_found, tracker, True)))
 
-                try:
-                    print(f"Promising states: {tracker['promising_states'].qsize()}")
-                except:
-                    print("No promising states!")
-
-            print("Backtracking completed!")
-
             if solution_found.is_set():
                 payload = {'solution': tracker['solution'],
                            'duration': (datetime.now() - stt_time).total_seconds(),
@@ -207,7 +194,9 @@ def parallel_solver_pooling(puzzle, response_queue, session_id):
             else:
                 print("Could not find solution!!")
                 try:
-                    payload = {'solution': None, 'duration': (datetime.now() - stt_time).total_seconds()}
+                    payload = {'solution': None,
+                               'duration': (datetime.now() - stt_time).total_seconds(),
+                               'session': session_id}
                     response_queue.put(payload)
                     print("Solution put into the response queue!")
                 except ValueError:
@@ -215,7 +204,9 @@ def parallel_solver_pooling(puzzle, response_queue, session_id):
 
     else:
         try:
-            payload = {'solution': None, 'duration': (datetime.now() - stt_time).total_seconds()}
+            payload = {'solution': None,
+                       'duration': (datetime.now() - stt_time).total_seconds(),
+                       'session': session_id}
             response_queue.put(payload)
             print("Response put into response queue!")
         except ValueError:
@@ -226,13 +217,13 @@ def worker_process_pooling(grid, actions, depth, pcs_id, solution_found, tracker
 
     if solution_found.is_set():
         if spawned:
-            print("Solution already found, spawn denied!!")
+            # print("Solution already found, spawn denied!!")
             # print(f"Terminating {pcs_id}")
             printstats(tracker)
         return None
 
     if depth > tracker['backtracking_depth_max']:
-        # print("Depth exceeded, adding promising states..")
+        print(f"Depth exceeded, Killing branch {pcs_id}..")
         # tracker['promising_states'].put(deepcopy(grid), actions)
         if spawned:
             # print(f"Terminating {pcs_id}")
@@ -251,7 +242,7 @@ def worker_process_pooling(grid, actions, depth, pcs_id, solution_found, tracker
         if spawned:
             # print(f"Terminating {pcs_id}")
             printstats(tracker)
-            print("Solution Found!")
+            # print("Solution Found!")
         return
 
     if not solver.state_invalid:
@@ -293,3 +284,21 @@ def printstats(tracker):
         'Pending': tracker['pending_processes'],
         'backtracking_depth_max': tracker['backtracking_depth_max']
     })
+
+
+def sat_solver(puzzle, response_queue, session_id):
+    stt_time = datetime.now()
+    print("SAT Solver invoked!")
+    solver = SATSolver(puzzle)
+    solution = solver.solve()
+
+    payload = {'solution': solution,
+               'duration': (datetime.now() - stt_time).total_seconds(),
+               'session': session_id}
+    try:
+        response_queue.put(payload)
+        print("Response queue loaded!")
+        del solver
+    except ValueError:
+        del solver
+        print(f"Error occurred while loading response queue")

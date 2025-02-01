@@ -5,8 +5,7 @@ from multiprocessing import Process, Queue
 from threading import Thread
 from queue import Empty
 from copy import deepcopy
-
-from pulsar.tools import sequential_solver, parallel_solver_pooling
+from pulsar.tools import sequential_solver, parallel_solver_pooling, sat_solver
 
 error_db = {
     200: "Success",
@@ -40,10 +39,9 @@ class Pulsar:
         print("Pulsar at your service!")
 
     def take_action(self):
-
         req_msg = request.json
         session_id = req_msg.get('session_id')
-        print(f"Request receeived: {req_msg}")
+        print(f"Request received: from client {session_id}")
 
         if req_msg['action'] == 'solve_puzzle':
             try:
@@ -58,30 +56,49 @@ class Pulsar:
 
         return self.response(412)
 
-    def trigger_solver(self, puzzle, solver='sequential', session_id=None):
-
+    @staticmethod
+    def trigger_solver(puzzle, solver='sequential', session_id=None):
+        """
+        Trigger the solver process in the background and send results to the response queue.
+        This function will immediately return after triggering the solver.
+        """
         if solver == 'parallel':
             p = Process(target=parallel_solver_pooling, args=(deepcopy(puzzle), response_queue, session_id))
+        elif solver == 'SAT':
+            p = Process(target=sat_solver, args=(deepcopy(puzzle), response_queue, session_id))
         else:
             p = Process(target=sequential_solver, args=(deepcopy(puzzle), response_queue, session_id))
 
         p.start()
 
     def check_and_send_response(self):
+        """
+        Check the response queue in a background thread and emit the solution to clients
+        using SocketIO. This ensures the solution is sent once it's ready.
+        """
         print("Queue check started!")
 
         while True:
             try:
+                # Get data from the queue (non-blocking with timeout)
                 payload = response_queue.get(timeout=0.1)
-                print("Data found in response queue")
+
+                # Use the start_background_task method to safely emit from the background thread
                 if payload['session'] in self.clients:
-                    self.socketio.emit('Solution Found!', payload, room=payload['session'])
-                    print(f"Solution sent to client {payload['session']}")
+                    self.socketio.start_background_task(self.emit_solution, payload)
             except Empty:
                 pass
             except ValueError:
                 print(f"Error occurred while getting data from response queue")
                 return
+
+    def emit_solution(self, payload):
+        """ Emit the solution to the client. This function runs in the main process. """
+        try:
+            self.socketio.emit('solution_found', payload, room=payload['session'])
+            print(f"Solution sent to client {payload['session']}")
+        except Exception as e:
+            print(f"Error emitting solution: {e}")
 
     def handle_connect(self):
         """ When a client connects, generate and send a unique session ID """
@@ -106,7 +123,6 @@ class Pulsar:
 
     @staticmethod
     def response(err, data=None):
-
         if not data:
             data = {}
 
