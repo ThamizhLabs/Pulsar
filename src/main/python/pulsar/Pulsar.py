@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit, join_room, leave_room
 import uuid
 from multiprocessing import Process, Queue
+from threading import Thread
 from queue import Empty
 from copy import deepcopy
 
@@ -32,6 +33,10 @@ class Pulsar:
         self.socketio.on_event('connect', self.handle_connect)
         self.socketio.on_event('disconnect', self.handle_disconnect)
 
+        # Start the listener thread for checking the response queue
+        self.listener_thread = Thread(target=self.check_and_send_response, daemon=True)
+        self.listener_thread.start()
+
         print("Pulsar at your service!")
 
     def take_action(self):
@@ -60,26 +65,23 @@ class Pulsar:
         else:
             p = Process(target=sequential_solver, args=(deepcopy(puzzle), response_queue, session_id))
 
-        r = Process(target=self.check_and_send_response, args=(response_queue, session_id))
-
         p.start()
-        r.start()
 
-    def check_and_send_response(self, session_id):
-        solution_found = False
-        while not solution_found:
+    def check_and_send_response(self):
+        print("Queue check started!")
+
+        while True:
             try:
                 payload = response_queue.get(timeout=0.1)
-                solution_found = True
-                if session_id in self.clients:
-                    self.socketio.emit('Solution Found!', payload, room=session_id)
-                    print(f"Solution sent to client {session_id}")
-                return jsonify(payload), 200
+                print("Data found in response queue")
+                if payload['session'] in self.clients:
+                    self.socketio.emit('Solution Found!', payload, room=payload['session'])
+                    print(f"Solution sent to client {payload['session']}")
             except Empty:
                 pass
             except ValueError:
                 print(f"Error occurred while getting data from response queue")
-                return jsonify({'message': 'Error getting solution from the queue'}), 400
+                return
 
     def handle_connect(self):
         """ When a client connects, generate and send a unique session ID """
