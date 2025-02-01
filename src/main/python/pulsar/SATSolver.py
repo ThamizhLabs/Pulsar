@@ -80,7 +80,7 @@ class SATSolver:
             solver_solution = self.sudoku.get_model()
 
             solutions = []
-            while solver_solution and len(solutions) <= 5:
+            while solver_solution and len(solutions) < 2:
                 solution = [[[] for _ in range(self.size)] for _ in range(self.size)]
                 for var in solver_solution:
                     if var >= 0:
@@ -91,7 +91,8 @@ class SATSolver:
                 self.rate_difficulty()
                 solver_solution = self.check_next_solution(solution)
 
-            print(f"No of possible solutions: {len(solutions)}")
+            if len(solutions) > 1:
+                print(f"Puzzle has more than 1 solution!")
 
             return solutions[0]
 
@@ -131,14 +132,6 @@ class SATSolver:
         )
 
         # Classify difficulty based on the score
-        print(f"Difficulty Score: {difficulty_score}")
+        stats['difficulty_score'] = difficulty_score
         print(stats)
-        if difficulty_score < 10:
-            return "Easy"
-        elif difficulty_score < 20:
-            return "Medium"
-        elif difficulty_score < 35:
-            return "Hard"
-        else:
-            return "Very Hard"
         

@@ -92,6 +92,7 @@ def apply_backtracking(grid, depth=1):
 
 def sequential_solver(puzzle, response_queue, session_id):
     stt_time = datetime.now()
+    print("")
     print("Sequential Solver invoked!")
     solver = simple_solve(puzzle)
     print("Distinctive iterations done")
@@ -115,14 +116,14 @@ def sequential_solver(puzzle, response_queue, session_id):
 
     try:
         response_queue.put(payload)
-        print("Response queue loaded!")
     except ValueError:
         print(f"Error occurred while loading response queue")
 
 
-def parallel_solver_pooling(puzzle, response_queue, session_id):
+def parallel_solver(puzzle, response_queue, session_id):
 
     stt_time = datetime.now()
+    print("")
     print("Parallel Solver invoked!")
     solver = simple_solve(puzzle)
     print("Distinctive iterations done")
@@ -154,10 +155,6 @@ def parallel_solver_pooling(puzzle, response_queue, session_id):
 
             tracker['spawn_queue'] = manager.Queue()
 
-            # with Pool(processes=parallel_processes_max) as pool:  # Adjust the number of processes as needed
-            #     tasks = pool.starmap(create_tasks_for_pooling,
-            #     [(solver.grid, actions, solution_found, tracker) for actions in actions_list])
-
             for idx, actions in enumerate(actions_list):
                 tracker['spawn_queue'].put((deepcopy(solver.grid), actions, 1, f'{idx}'))
 
@@ -166,11 +163,10 @@ def parallel_solver_pooling(puzzle, response_queue, session_id):
                 tracker['active_processes'] += 1
                 tracker['total_processes'] += 1
                 tracker['pending_processes'] = tracker['spawn_queue'].qsize() - 1
-                async_results = [pool.apply_async(worker_process_pooling, args=(*tracker['spawn_queue'].get(),
-                                                                                solution_found, tracker, True))]
+                async_results = [pool.apply_async(worker_process, args=(*tracker['spawn_queue'].get(),
+                                                                        solution_found, tracker, True))]
 
                 while not solution_found.is_set() and any(not result.ready() for result in async_results):
-                    # pool.starmap(worker_process_pooling, tracker['spawn_queue'])
                     tracker['active_processes'] = sum(1 for result in async_results if not result.ready())
 
                     batch = []
@@ -182,7 +178,7 @@ def parallel_solver_pooling(puzzle, response_queue, session_id):
                     tracker['pending_processes'] = tracker['spawn_queue'].qsize()
 
                     for x in batch:
-                        async_results.append(pool.apply_async(worker_process_pooling,
+                        async_results.append(pool.apply_async(worker_process,
                                                               args=(*x, solution_found, tracker, True)))
 
             if solution_found.is_set():
@@ -213,7 +209,7 @@ def parallel_solver_pooling(puzzle, response_queue, session_id):
             print(f"Error occurred while loading response queue")
 
 
-def worker_process_pooling(grid, actions, depth, pcs_id, solution_found, tracker, spawned):
+def worker_process(grid, actions, depth, pcs_id, solution_found, tracker, spawned):
 
     if solution_found.is_set():
         if spawned:
@@ -268,7 +264,7 @@ def worker_process_pooling(grid, actions, depth, pcs_id, solution_found, tracker
                 tracker['spawn_queue'].put((deepcopy(solver.grid), actions, depth+1, f'{pcs_id}.{idx}'))
 
         for actions in actions_list:
-            worker_process_pooling(deepcopy(solver.grid), actions, depth+1, pcs_id, solution_found, tracker, False)
+            worker_process(deepcopy(solver.grid), actions, depth+1, pcs_id, solution_found, tracker, False)
 
     if spawned:
         # print(f"Terminating {pcs_id}")
@@ -288,6 +284,7 @@ def printstats(tracker):
 
 def sat_solver(puzzle, response_queue, session_id):
     stt_time = datetime.now()
+    print("")
     print("SAT Solver invoked!")
     solver = SATSolver(puzzle)
     solution = solver.solve()
@@ -297,7 +294,6 @@ def sat_solver(puzzle, response_queue, session_id):
                'session': session_id}
     try:
         response_queue.put(payload)
-        print("Response queue loaded!")
         del solver
     except ValueError:
         del solver

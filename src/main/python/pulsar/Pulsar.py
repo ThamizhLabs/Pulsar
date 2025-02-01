@@ -5,7 +5,7 @@ from multiprocessing import Process, Queue
 from threading import Thread
 from queue import Empty
 from copy import deepcopy
-from pulsar.tools import sequential_solver, parallel_solver_pooling, sat_solver
+from pulsar.tools import sequential_solver, parallel_solver, sat_solver
 
 error_db = {
     200: "Success",
@@ -63,7 +63,7 @@ class Pulsar:
         This function will immediately return after triggering the solver.
         """
         if solver == 'parallel':
-            p = Process(target=parallel_solver_pooling, args=(deepcopy(puzzle), response_queue, session_id))
+            p = Process(target=parallel_solver, args=(deepcopy(puzzle), response_queue, session_id))
         elif solver == 'SAT':
             p = Process(target=sat_solver, args=(deepcopy(puzzle), response_queue, session_id))
         else:
@@ -76,8 +76,6 @@ class Pulsar:
         Check the response queue in a background thread and emit the solution to clients
         using SocketIO. This ensures the solution is sent once it's ready.
         """
-        print("Queue check started!")
-
         while True:
             try:
                 # Get data from the queue (non-blocking with timeout)
@@ -117,9 +115,9 @@ class Pulsar:
                 print(f"Client {session_id} disconnected")
                 break
 
-    def run(self, host='0.0.0.0', port=5000):
+    def run(self, host='0.0.0.0', port=5000, debug=False):
         """Starts the Flask-SocketIO server."""
-        self.socketio.run(self.pulsar, host=host, port=port, debug=True, allow_unsafe_werkzeug=True)
+        self.socketio.run(self.pulsar, host=host, port=port, debug=debug, allow_unsafe_werkzeug=True)
 
     @staticmethod
     def response(err, data=None):
