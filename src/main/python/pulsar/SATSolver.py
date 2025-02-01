@@ -93,7 +93,7 @@ class SATSolver:
 
             print(f"No of possible solutions: {len(solutions)}")
 
-            return solution
+            return solutions[0]
 
         print("No Solution exists!")
         return None
