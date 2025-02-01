@@ -1,9 +1,11 @@
 from flask import Flask, request, jsonify
+from flask_socketio import SocketIO, emit, join_room, leave_room
+import uuid
 from multiprocessing import Process, Queue
-from copy import deepcopy
 from queue import Empty
+from copy import deepcopy
 
-from pulsar.tools import sequential_solver, parallel_solver, parallel_solver_pooling
+from pulsar.tools import sequential_solver, parallel_solver_pooling
 
 error_db = {
     200: "Success",
@@ -18,29 +20,25 @@ response_queue = Queue()
 
 class Pulsar:
     def __init__(self):
-        # self.response_queue = Queue()
-
-        self.keys = []
 
         self.pulsar = Flask(__name__)
         self.pulsar.add_url_rule('/set', 'take_action', self.take_action, methods=['POST'])
-        self.pulsar.add_url_rule('/get', 'send_response', self.send_response, methods=['GET'])
+        # self.pulsar.add_url_rule('/get', 'send_response', self.send_response, methods=['GET'])
+
+        self.socketio = SocketIO(self.pulsar, cors_allowed_origins="*")
+        self.clients = {}  # Dictionary to track connected clients
+
+        # Dynamically register WebSocket events
+        self.socketio.on_event('connect', self.handle_connect)
+        self.socketio.on_event('disconnect', self.handle_disconnect)
 
         print("Pulsar at your service!")
 
     def take_action(self):
 
         req_msg = request.json
-        print(f"Request receeived1: {req_msg}")
-
-        if req_msg['action'] == 'connect':
-            return self.generate_new_key()
-
-        if not req_msg.get('key'):
-            return self.response(410)
-
-        if not self.key_valid(req_msg['key']):
-            return self.response(411)
+        session_id = req_msg.get('session_id')
+        print(f"Request receeived: {req_msg}")
 
         if req_msg['action'] == 'solve_puzzle':
             try:
@@ -48,12 +46,61 @@ class Pulsar:
                     response_queue.get()
                 puzzle = req_msg['puzzle']
                 solver = req_msg.get('solver')
-                self.trigger_solver(puzzle, solver=solver)
+                self.trigger_solver(puzzle, solver=solver, session_id=session_id)
                 return self.response(200)
             except KeyError:
                 return self.response(413)
 
         return self.response(412)
+
+    def trigger_solver(self, puzzle, solver='sequential', session_id=None):
+
+        if solver == 'parallel':
+            p = Process(target=parallel_solver_pooling, args=(deepcopy(puzzle), response_queue, session_id))
+        else:
+            p = Process(target=sequential_solver, args=(deepcopy(puzzle), response_queue, session_id))
+
+        r = Process(target=self.check_and_send_response, args=(response_queue, session_id))
+
+        p.start()
+        r.start()
+
+    def check_and_send_response(self, session_id):
+        solution_found = False
+        while not solution_found:
+            try:
+                payload = response_queue.get(timeout=0.1)
+                solution_found = True
+                if session_id in self.clients:
+                    self.socketio.emit('Solution Found!', payload, room=session_id)
+                    print(f"Solution sent to client {session_id}")
+                return jsonify(payload), 200
+            except Empty:
+                pass
+            except ValueError:
+                print(f"Error occurred while getting data from response queue")
+                return jsonify({'message': 'Error getting solution from the queue'}), 400
+
+    def handle_connect(self):
+        """ When a client connects, generate and send a unique session ID """
+        session_id = str(uuid.uuid4())  # Generate a unique ID for the client
+        self.clients[session_id] = request.sid  # Map session ID to WebSocket session
+        join_room(session_id)  # Join a private room for this client
+        emit('session_id', {'session_id': session_id})  # Send ID to client
+        print(f"Client {session_id} connected")
+
+    def handle_disconnect(self):
+        """ When a client disconnects, remove them from tracking """
+        for session_id, sid in list(self.clients.items()):
+            if sid == request.sid:
+                leave_room(session_id)
+                del self.clients[session_id]
+                print(f"Client {session_id} disconnected")
+                break
+
+    def run(self, host='0.0.0.0', port=5000):
+        """Starts the Flask-SocketIO server."""
+        self.socketio.run(self.pulsar, host=host, port=port, debug=True, allow_unsafe_werkzeug=True)
 
     @staticmethod
     def response(err, data=None):
@@ -63,31 +110,3 @@ class Pulsar:
 
         data['message'] = error_db[err]
         return jsonify(data), err
-
-    def generate_new_key(self):
-        new_key = "key_kahsdkfjsdf0182738kjsd"
-        self.keys.append(new_key)
-        return self.response(200, {"key": new_key})
-
-    def key_valid(self, key):
-        return key in self.keys
-
-    @staticmethod
-    def trigger_solver(puzzle, solver='sequential'):
-        if solver == 'parallel':
-            p = Process(target=parallel_solver_pooling, args=(deepcopy(puzzle), response_queue))
-            # p.daemon = True
-        else:
-            p = Process(target=sequential_solver, args=(deepcopy(puzzle), response_queue))
-            # p.daemon = True
-        p.start()
-
-    def send_response(self):
-        try:
-            payload = response_queue.get(timeout=0.1)
-            return self.response(200, {"payload": payload})
-        except Empty:
-            return self.response(204)
-        except ValueError:
-            print(f"Error occurred while getting data from response queue")
-            self.response(400)

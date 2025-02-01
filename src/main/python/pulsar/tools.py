@@ -1,14 +1,14 @@
 from itertools import product
 from copy import deepcopy
 from datetime import datetime
-from multiprocessing import Process, Event, Pool, Manager
+from multiprocessing import Pool, Manager
 
 from pulsar.Solver import Solver
 
 
 backtracking_depth_max = 40
 backtracking_step = 1
-parallel_processes_max = 15
+parallel_processes_max = 10
 
 
 def get_backtracking_elements(grid, step):
@@ -93,7 +93,7 @@ def apply_backtracking(grid, depth=1):
     return solver
 
 
-def sequential_solver(puzzle, response_queue):
+def sequential_solver(puzzle, response_queue, session_id):
     stt_time = datetime.now()
     print("Sequential Solver invoked!")
     solver = simple_solve(puzzle)
@@ -106,9 +106,13 @@ def sequential_solver(puzzle, response_queue):
 
     if solver.state_solved:
         print("Solution Found!")
-        payload = {'solution': solver.grid, 'duration': (datetime.now() - stt_time).total_seconds()}
+        payload = {'solution': solver.grid,
+                   'duration': (datetime.now() - stt_time).total_seconds(),
+                   'session': session_id}
     else:
-        payload = {'solution': None, 'duration': (datetime.now() - stt_time).total_seconds()}
+        payload = {'solution': None,
+                   'duration': (datetime.now() - stt_time).total_seconds(),
+                   'session': session_id}
         print("Could not find solution!!")
     del solver
 
@@ -119,7 +123,7 @@ def sequential_solver(puzzle, response_queue):
         print(f"Error occurred while loading response queue")
 
 
-def parallel_solver(puzzle, response_queue):
+def parallel_solver_pooling(puzzle, response_queue, session_id):
 
     stt_time = datetime.now()
     print("Parallel Solver invoked!")
@@ -128,85 +132,16 @@ def parallel_solver(puzzle, response_queue):
     if solver.state_solved:
         print("Solution Found!")
         try:
-            payload = {'solution': solver.grid, 'duration': 0}
+            payload = {'solution': solver.grid, 'duration': 0, 'session': session_id}
             response_queue.put(payload)
             print("Solution put into the response queue!")
         except ValueError:
             print(f"Error occurred while loading response queue")
         return
 
-    if (not solver.state_invalid) and (not solver.state_solved):
+    if not solver.state_invalid:
         print("Simple Solve not enough, applying multithreaded backtracking..")
-        completion_event = Event()
-        p = Process(target=worker_process, args=(1, completion_event, stt_time, deepcopy(solver.grid), response_queue))
-        # p.daemon = True
-        p.start()
-        p.join()
-
-    if response_queue.qsize() <= 0:
-        print("Could not find solution!!")
-        try:
-            payload = {'solution': None, 'duration': (datetime.now() - stt_time).total_seconds()}
-            response_queue.put(payload)
-            print("Solution put into the response queue!")
-        except ValueError:
-            print(f"Error occurred while loading response queue")
-
-
-def worker_process(depth, completion_event, stt_time, grid, response_queue):
-    if (completion_event.is_set()) or (depth > backtracking_depth_max):
-        # payload = {'solution': None, 'duration': 0}
-        # print("Could not find solution!!")
-        # try:
-        #     response_queue.put(payload)
-        #     print("Response put into the response queue!")
-        # except ValueError:
-        #     print(f"Error occurred while loading response queue")
-        return
-
-    actions_list = get_next_set_of_actions(grid, step=backtracking_step)
-    process_list = []
-    for actions in actions_list:
-        solver = Solver(deepcopy(grid), actions)
-        solver.solve()
-
-        if solver.state_solved:
-            completion_event.set()
-            try:
-                payload = {'solution': solver.grid, 'duration': (datetime.now() - stt_time).total_seconds()}
-                response_queue.put(payload)
-                print("Solution put into the response queue!")
-            except ValueError:
-                print(f"Error occurred while loading response queue")
-            return
-
-        if not solver.state_invalid:
-            p = Process(target=worker_process, args=(depth+1, completion_event, stt_time, deepcopy(solver.grid), response_queue))
-            process_list.append(p)
-
-    for p in process_list:
-        p.start()
-
-
-def parallel_solver_pooling(puzzle, response_queue):
-
-    stt_time = datetime.now()
-    print("Parallel Solver invoked!")
-    solver = simple_solve(puzzle)
-    print("Distinctive iterations done")
-    if solver.state_solved:
-        print("Solution Found!")
-        try:
-            payload = {'solution': solver.grid, 'duration': 0}
-            response_queue.put(payload)
-            print("Solution put into the response queue!")
-        except ValueError:
-            print(f"Error occurred while loading response queue")
-        return
-
-    if (not solver.state_invalid) and (not solver.state_solved):
-        print("Simple Solve not enough, applying multithreaded backtracking..")
-        actions_list = get_next_set_of_actions(solver.grid, step=4)
+        actions_list = get_next_set_of_actions(solver.grid, step=1)
 
         print(f"Total Iterations: {len(actions_list)}")
 
@@ -214,32 +149,59 @@ def parallel_solver_pooling(puzzle, response_queue):
             solution_found = manager.Event()
             tracker = manager.dict()
 
-            tracker['total_processes'] = len(actions_list)
-            tracker['pending_processes'] = len(actions_list)
+            tracker['total_processes'] = 0
             tracker['max_processes'] = parallel_processes_max
             tracker['active_processes'] = 0
-            tracker['terminated_processes'] = 0
+            tracker['pending_processes'] = 0
             tracker['backtracking_step'] = backtracking_step
+            tracker['backtracking_depth_max'] = backtracking_depth_max
             tracker['solution'] = None
 
+            tracker['spawn_queue'] = manager.Queue()
+            tracker['promising_states'] = manager.Queue()
+
             # with Pool(processes=parallel_processes_max) as pool:  # Adjust the number of processes as needed
-            #     tasks = pool.starmap(create_tasks_for_pooling, [(solver.grid, actions, solution_found, tracker) for actions in actions_list])
+            #     tasks = pool.starmap(create_tasks_for_pooling,
+            #     [(solver.grid, actions, solution_found, tracker) for actions in actions_list])
 
-            tracker['spawn_queue'] = [(deepcopy(solver.grid), actions) for actions in actions_list]
+            for idx, actions in enumerate(actions_list):
+                tracker['spawn_queue'].put((deepcopy(solver.grid), actions, 1, f'{idx}'))
 
-            with Pool(processes=parallel_processes_max) as pool:  # Adjust the number of processes as needed
-                while (len(tracker['spawn_queue']) > 0) and (not solution_found.is_set()):
+            with Pool(processes=parallel_processes_max) as pool:
+
+                tracker['active_processes'] += 1
+                tracker['total_processes'] += 1
+                tracker['pending_processes'] = tracker['spawn_queue'].qsize() - 1
+                async_results = [pool.apply_async(worker_process_pooling, args=(*tracker['spawn_queue'].get(),
+                                                                                solution_found, tracker, True))]
+
+                while not solution_found.is_set() and any(not result.ready() for result in async_results):
                     # pool.starmap(worker_process_pooling, tracker['spawn_queue'])
+                    tracker['active_processes'] = sum(1 for result in async_results if not result.ready())
 
                     batch = []
-                    while (len(tracker['spawn_queue']) > 0) and (len(batch) <= parallel_processes_max):
-                        batch.append(tracker['spawn_queue'].pop())
+                    while (not tracker['spawn_queue'].empty()) and (len(batch) < parallel_processes_max):
+                        batch.append(tracker['spawn_queue'].get())
+
+                    tracker['active_processes'] += len(batch)
+                    tracker['total_processes'] += len(batch)
+                    tracker['pending_processes'] = tracker['spawn_queue'].qsize()
 
                     for x in batch:
-                        pool.apply_async(worker_process_pooling, args=(*x, 1, solution_found, tracker))
+                        async_results.append(pool.apply_async(worker_process_pooling,
+                                                              args=(*x, solution_found, tracker, True)))
+
+                try:
+                    print(f"Promising states: {tracker['promising_states'].qsize()}")
+                except:
+                    print("No promising states!")
+
+            print("Backtracking completed!")
 
             if solution_found.is_set():
-                payload = {'solution': tracker['solution'], 'duration': (datetime.now() - stt_time).total_seconds()}
+                payload = {'solution': tracker['solution'],
+                           'duration': (datetime.now() - stt_time).total_seconds(),
+                           'session': session_id}
                 response_queue.put(payload)
                 print("Solution put into the response queue!")
             else:
@@ -251,25 +213,34 @@ def parallel_solver_pooling(puzzle, response_queue):
                 except ValueError:
                     print(f"Error occurred while loading response queue")
 
+    else:
+        try:
+            payload = {'solution': None, 'duration': (datetime.now() - stt_time).total_seconds()}
+            response_queue.put(payload)
+            print("Response put into response queue!")
+        except ValueError:
+            print(f"Error occurred while loading response queue")
 
-# def create_tasks_for_pooling(grid, actions, solution_found, tracker):
-#     return deepcopy(grid), actions, 1, solution_found, tracker
 
+def worker_process_pooling(grid, actions, depth, pcs_id, solution_found, tracker, spawned):
 
-def worker_process_pooling(grid, actions, depth, solution_found, tracker):
-
-    if solution_found.is_set() or (depth > backtracking_depth_max):
-        if depth == 1:
+    if solution_found.is_set():
+        if spawned:
             print("Solution already found, spawn denied!!")
-            print(sel(tracker))
+            # print(f"Terminating {pcs_id}")
+            printstats(tracker)
         return None
 
-    if depth == 1:
-        tracker['active_processes'] += 1
-        if tracker['pending_processes'] > 0:
-            tracker['pending_processes'] -= 1
+    if depth > tracker['backtracking_depth_max']:
+        # print("Depth exceeded, adding promising states..")
+        # tracker['promising_states'].put(deepcopy(grid), actions)
+        if spawned:
+            # print(f"Terminating {pcs_id}")
+            printstats(tracker)
+        return None
 
-        print(sel(tracker))
+    if spawned:
+        printstats(tracker)
 
     solver = Solver(deepcopy(grid), actions)
     solver.solve()
@@ -277,31 +248,48 @@ def worker_process_pooling(grid, actions, depth, solution_found, tracker):
     if solver.state_solved:
         solution_found.set()
         tracker['solution'] = solver.grid
-        if depth == 1:
-            tracker['active_processes'] -= 1
-            print(sel(tracker))
+        if spawned:
+            # print(f"Terminating {pcs_id}")
+            printstats(tracker)
             print("Solution Found!")
         return
 
     if not solver.state_invalid:
         actions_list = get_next_set_of_actions(solver.grid, step=tracker['backtracking_step'])
 
-        if (tracker['pending_processes'] <= 0) and (tracker['active_processes'] < tracker['max_processes']):
-            tracker['total_processes'] += len(actions_list)
-            tracker['pending_processes'] += len(actions_list)
-            tasks = [(deepcopy(solver.grid), actions) for actions in actions_list]
-            tracker['spawn_queue'].append(tasks)
-            print(f"spawning additional processes! {tasks[0]}")
-        else:
-            for actions in actions_list:
-                worker_process_pooling(deepcopy(solver.grid), actions, depth+1, solution_found, tracker)
+        available_spawns = tracker['max_processes'] - tracker['active_processes']
 
-    if depth == 1:
-        tracker['active_processes'] -= 1
-        tracker['terminated_processes'] += 1
-        print(sel(tracker))
+        # if available_spawns > 0:
+        #     print("Sleeping")
+        #     time.sleep(0.1)
+        #     try:
+        #         available_spawns_after = tracker['max_processes'] - tracker['active_processes_queue'].qsize()
+        #     except NotImplementedError:
+        #         available_spawns_after = tracker['max_processes']
+
+        if tracker['spawn_queue'].empty() and (available_spawns > 0):
+            spawn_actions = []
+            while (available_spawns > 0) and (len(actions_list) > 0):
+                spawn_actions.append(actions_list.pop())
+                available_spawns -= 1
+
+            for idx, actions in enumerate(spawn_actions):
+                tracker['spawn_queue'].put((deepcopy(solver.grid), actions, depth+1, f'{pcs_id}.{idx}'))
+
+        for actions in actions_list:
+            worker_process_pooling(deepcopy(solver.grid), actions, depth+1, pcs_id, solution_found, tracker, False)
+
+    if spawned:
+        # print(f"Terminating {pcs_id}")
+        printstats(tracker)
+
     return None
 
 
-def sel(tracker):
-    return {idx: val for idx, val in tracker.items() if idx != "spawn_queue"}
+def printstats(tracker):
+    print({
+        'Total': tracker['total_processes'],
+        'Active': tracker['active_processes'],
+        'Pending': tracker['pending_processes'],
+        'backtracking_depth_max': tracker['backtracking_depth_max']
+    })

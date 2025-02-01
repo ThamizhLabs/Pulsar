@@ -105,30 +105,31 @@ class Solver:
         for t in relative_cells:
             (i, j) = t
 
-            if i == x:
-                relative_row_cells.append(t)
+            if (i == x) and (self.grid[i][j].count(val) > 0):
+                flag1 = False
 
-            if j == y:
-                relative_col_cells.append(t)
+            if (j == y) and (self.grid[i][j].count(val) > 0):
+                flag2 = False
 
             if (int(x - x % self.rank) <= i <= int(x - x % self.size + self.size - 1) and
                     int(y - y % self.size) <= j <= int(y - y % self.size + self.size - 1)):
-                relative_blk_cells.append(t)
+                if self.grid[i][j].count(val) > 0:
+                    flag3 = False
 
-        for t in relative_row_cells:
-            i, j = t
-            if self.grid[i][j].count(val) > 0:
-                flag1 = False
-
-        for t in relative_col_cells:
-            i, j = t
-            if self.grid[i][j].count(val) > 0:
-                flag2 = False
-
-        for t in relative_blk_cells:
-            i, j = t
-            if self.grid[i][j].count(val) > 0:
-                flag3 = False
+        # for t in relative_row_cells:
+        #     i, j = t
+        #     if self.grid[i][j].count(val) > 0:
+        #         flag1 = False
+        #
+        # for t in relative_col_cells:
+        #     i, j = t
+        #     if self.grid[i][j].count(val) > 0:
+        #         flag2 = False
+        #
+        # for t in relative_blk_cells:
+        #     i, j = t
+        #     if self.grid[i][j].count(val) > 0:
+        #         flag3 = False
 
         return flag1 | flag2 | flag3
 
